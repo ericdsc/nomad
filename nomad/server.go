@@ -424,17 +424,11 @@ func (s *Server) reloadTLSConnections(newTLSConfig *config.TLSConfig) error {
 	// reinitialize our rpc listener
 	s.rpcListener.Close()
 	<-s.listenerCh
-
-	err = s.createRPCListener()
-	if err != nil {
-		return err
-	}
-	s.startRPCListener()
+	s.raftLayer.Close()
+	s.raftTransport.Close()
 
 	// CLose existing streams
-	s.raftTransport.Close()
-	s.raftLayer.Close()
-
+	//s.raftTransport.Close()
 	wrapper := tlsutil.RegionSpecificWrapper(s.config.Region, tlsWrap)
 	s.raftLayer = NewRaftLayer(s.rpcAdvertise, wrapper)
 
@@ -447,6 +441,12 @@ func (s *Server) reloadTLSConnections(newTLSConfig *config.TLSConfig) error {
 
 	// Reload raft with the new transport
 	s.raft.Reload(s.raftTransport)
+
+	err = s.createRPCListener()
+	if err != nil {
+		return err
+	}
+	s.startRPCListener()
 
 	s.logger.Printf("[DEBUG] nomad: finished reloading server connections")
 	return nil
@@ -614,6 +614,7 @@ func (s *Server) Reload(newConfig *Config) error {
 
 	if !newConfig.TLSConfig.Equals(s.config.TLSConfig) {
 		if err := s.reloadTLSConnections(newConfig.TLSConfig); err != nil {
+			s.logger.Printf("[DEBUG] nomad: reloading server TLS configuration")
 			multierror.Append(&mErr, err)
 		}
 	}

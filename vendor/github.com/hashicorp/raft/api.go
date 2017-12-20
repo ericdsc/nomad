@@ -138,7 +138,8 @@ type Raft struct {
 	stable StableStore
 
 	// The transport layer we use
-	trans Transport
+	trans     Transport
+	transLock sync.Mutex
 
 	// verifyCh is used to async send verify futures to the main thread
 	// to verify we are still the leader
@@ -787,6 +788,8 @@ func (r *Raft) DemoteVoter(id ServerID, prevIndex uint64, timeout time.Duration)
 }
 
 func (r *Raft) Reload(trans Transport) {
+	r.transLock.Lock()
+	defer r.transLock.Unlock()
 	r.trans = trans
 }
 

@@ -638,6 +638,7 @@ func (c *Command) handleReload() {
 
 	shouldReload := c.agent.ShouldReload(newConf)
 	if shouldReload {
+		c.agent.logger.Printf("[DEBUG] agent: starting reload of agent config")
 		err := c.agent.Reload(newConf)
 		if err != nil {
 			c.agent.logger.Printf("[ERR] agent: failed to reload the config: %v", err)
@@ -647,6 +648,7 @@ func (c *Command) handleReload() {
 
 	if s := c.agent.Server(); s != nil {
 		sconf, err := convertServerConfig(newConf, c.logOutput)
+		c.agent.logger.Printf("[DEBUG] agent: starting reload of server config")
 		if err != nil {
 			c.agent.logger.Printf("[ERR] agent: failed to convert server config: %v", err)
 		} else {
@@ -659,6 +661,7 @@ func (c *Command) handleReload() {
 
 	if s := c.agent.Client(); s != nil {
 		clientConfig, err := c.agent.clientConfig()
+		c.agent.logger.Printf("[DEBUG] agent: starting reload of client config")
 		if err != nil {
 			c.agent.logger.Printf("[ERR] agent: reloading client config failed: %v", err)
 			return

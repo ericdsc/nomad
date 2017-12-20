@@ -386,6 +386,8 @@ func TestServer_Reload_TLSConnections_Raft(t *testing.T) {
 		cafile  = "../../helper/tlsutil/testdata/ca.pem"
 		foocert = "../../helper/tlsutil/testdata/nomad-foo.pem"
 		fookey  = "../../helper/tlsutil/testdata/nomad-foo-key.pem"
+		barcert = "../dev/tls_cluster/certs/nomad.pem"
+		barkey  = "../dev/tls_cluster/certs/nomad-key.pem"
 	)
 	dir := tmpDir(t)
 	defer os.RemoveAll(dir)
@@ -394,6 +396,8 @@ func TestServer_Reload_TLSConnections_Raft(t *testing.T) {
 		c.DevMode = false
 		c.DevDisableBootstrap = true
 		c.DataDir = path.Join(dir, "node1")
+		c.NodeName = "node1"
+		c.Region = "regionFoo"
 	})
 	defer s1.Shutdown()
 
@@ -402,6 +406,8 @@ func TestServer_Reload_TLSConnections_Raft(t *testing.T) {
 		c.DevMode = false
 		c.DevDisableBootstrap = true
 		c.DataDir = path.Join(dir, "node2")
+		c.NodeName = "node2"
+		c.Region = "regionFoo"
 	})
 	defer s2.Shutdown()
 
@@ -415,7 +421,94 @@ func TestServer_Reload_TLSConnections_Raft(t *testing.T) {
 	})
 
 	// the server should be connected to the rest of the cluster
-	testutil.WaitForLeader(t, s1.RPC)
+	testutil.WaitForLeader(t, s2.RPC)
+
+	{
+		// assert that a job register request will succeed
+		codec := rpcClient(t, s2)
+		job := mock.Job()
+		req := &structs.JobRegisterRequest{
+			Job: job,
+			WriteRequest: structs.WriteRequest{
+				Region:    "regionFoo",
+				Namespace: job.Namespace,
+			},
+		}
+
+		// Fetch the response
+		var resp structs.JobRegisterResponse
+		err := msgpackrpc.CallWithCodec(codec, "Job.Register", req, &resp)
+		assert.Nil(err)
+
+		// Check for the job in the FSM of each server in the cluster
+		{
+			state := s2.fsm.State()
+			ws := memdb.NewWatchSet()
+			out, err := state.JobByID(ws, job.Namespace, job.ID)
+			assert.Nil(err)
+			assert.NotNil(out)
+			assert.Equal(out.CreateIndex, resp.JobModifyIndex)
+		}
+		{
+			state := s1.fsm.State()
+			ws := memdb.NewWatchSet()
+			out, err := state.JobByID(ws, job.Namespace, job.ID)
+			assert.Nil(err)
+			assert.NotNil(out) // TODO Occasionally is flaky
+			assert.Equal(out.CreateIndex, resp.JobModifyIndex)
+		}
+	}
+
+	newTLSConfig := &config.TLSConfig{
+		EnableHTTP:        true,
+		VerifyHTTPSClient: true,
+		CAFile:            cafile,
+		CertFile:          foocert,
+		KeyFile:           fookey,
+	}
+
+	err := s1.reloadTLSConnections(newTLSConfig)
+	assert.Nil(err)
+
+	{
+		// assert that a job register request will fail between servers that
+		// should not be able to communicate over Raft
+		codec := rpcClient(t, s2)
+		job := mock.Job()
+		req := &structs.JobRegisterRequest{
+			Job: job,
+			WriteRequest: structs.WriteRequest{
+				Region:    "global",
+				Namespace: job.Namespace,
+			},
+		}
+
+		var resp structs.JobRegisterResponse
+		err := msgpackrpc.CallWithCodec(codec, "Job.Register", req, &resp)
+		assert.NotNil(err)
+
+		// Check that the job was not persisted
+		state := s2.fsm.State()
+		ws := memdb.NewWatchSet()
+		out, err := state.JobByID(ws, job.Namespace, job.ID)
+		assert.Nil(out)
+	}
+
+	secondNewTLSConfig := &config.TLSConfig{
+		EnableHTTP:        true,
+		VerifyHTTPSClient: true,
+		CAFile:            cafile,
+		CertFile:          barcert,
+		KeyFile:           barkey,
+	}
+
+	// Now, transition the other server to TLS, which should restore their
+	// ability to communicate.
+	err = s2.reloadTLSConnections(secondNewTLSConfig)
+	assert.Nil(err)
+
+	// the server should be connected to the rest of the cluster
+	testutil.WaitForLeader(t, s2.RPC)
 
 	{
 		// assert that a job register request will succeed
@@ -451,39 +544,5 @@ func TestServer_Reload_TLSConnections_Raft(t *testing.T) {
 			assert.NotNil(out)
 			assert.Equal(out.CreateIndex, resp.JobModifyIndex)
 		}
-	}
-
-	newTLSConfig := &config.TLSConfig{
-		EnableHTTP:        true,
-		VerifyHTTPSClient: true,
-		CAFile:            cafile,
-		CertFile:          foocert,
-		KeyFile:           fookey,
-	}
-
-	err := s1.reloadTLSConnections(newTLSConfig)
-	assert.Nil(err)
-
-	{
-		// assert that a job register request will fail
-		codec := rpcClient(t, s2)
-		job := mock.Job()
-		req := &structs.JobRegisterRequest{
-			Job: job,
-			WriteRequest: structs.WriteRequest{
-				Region:    "global",
-				Namespace: job.Namespace,
-			},
-		}
-
-		var resp structs.JobRegisterResponse
-		err := msgpackrpc.CallWithCodec(codec, "Job.Register", req, &resp)
-		assert.NotNil(err)
-
-		// Check that the job was not persisted
-		state := s2.fsm.State()
-		ws := memdb.NewWatchSet()
-		out, err := state.JobByID(ws, job.Namespace, job.ID)
-		assert.Nil(out)
 	}
 }
