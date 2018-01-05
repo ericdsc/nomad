@@ -97,9 +97,10 @@ type Server struct {
 
 	// The raft instance is used among Nomad nodes within the
 	// region to protect operations that require strong consistency
-	leaderCh  <-chan bool
-	raft      *raft.Raft
-	raftLayer *RaftLayer
+	leaderCh     <-chan bool
+	raft         *raft.Raft
+	raftLayer    *RaftLayer
+	leaderCancel context.CancelFunc
 
 	raftStore *raftboltdb.BoltStore
 	raftInmem *raft.InmemStore
@@ -321,7 +322,9 @@ func NewServer(config *Config, consulCatalog consul.CatalogAPI, logger *log.Logg
 	}
 
 	// Monitor leadership changes
-	go s.monitorLeadership()
+	ctx, cancel := context.WithCancel(context.Background())
+	s.leaderCancel = cancel
+	go s.monitorLeadership(ctx)
 
 	// Start ingesting events for Serf
 	go s.serfEventHandler()
@@ -425,28 +428,40 @@ func (s *Server) reloadTLSConnections(newTLSConfig *config.TLSConfig) error {
 	s.rpcListener.Close()
 	<-s.listenerCh
 	s.raftLayer.Close()
-	s.raftTransport.Close()
+
+	err = s.createRPCListener()
 
 	// CLose existing streams
 	//s.raftTransport.Close()
 	wrapper := tlsutil.RegionSpecificWrapper(s.config.Region, tlsWrap)
 	s.raftLayer = NewRaftLayer(s.rpcAdvertise, wrapper)
 
-	// Reload Raft Layer with new stream layer
-	trans := raft.NewNetworkTransport(s.raftLayer, 3, s.config.RaftTimeout,
-		s.config.LogOutput)
-	s.raftTransport = trans
+	s.startRPCListener()
 
-	time.Sleep(1 * time.Second)
+	s.leaderCancel()
 
-	// Reload raft with the new transport
-	s.raft.Reload(s.raftTransport)
+	if s.raft != nil {
+		s.raftTransport.Close()
+		future := s.raft.Shutdown()
+		if err := future.Error(); err != nil {
+			s.logger.Printf("[WARN] nomad: Error shutting down raft: %s", err)
+		}
+		if s.raftStore != nil {
+			s.raftStore.Close()
+		}
+	}
 
-	err = s.createRPCListener()
+	time.Sleep(3 * time.Second)
+	err = s.setupRaft()
+
+	time.Sleep(3 * time.Second)
 	if err != nil {
 		return err
 	}
-	s.startRPCListener()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.leaderCancel = cancel
+	go s.monitorLeadership(ctx)
 
 	s.logger.Printf("[DEBUG] nomad: finished reloading server connections")
 	return nil

@@ -517,7 +517,7 @@ func TestServer_Reload_TLSConnections_Raft(t *testing.T) {
 		req := &structs.JobRegisterRequest{
 			Job: job,
 			WriteRequest: structs.WriteRequest{
-				Region:    "global",
+				Region:    "regionFoo",
 				Namespace: job.Namespace,
 			},
 		}

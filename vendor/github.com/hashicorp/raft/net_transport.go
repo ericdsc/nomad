@@ -364,6 +364,7 @@ func (n *NetworkTransport) listen() {
 			if n.IsShutdown() {
 				return
 			}
+			// TODO Getting an error here
 			n.logger.Printf("[ERR] raft-net: Failed to accept connection: %v", err)
 			continue
 		}

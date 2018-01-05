@@ -40,11 +40,14 @@ const (
 // monitorLeadership is used to monitor if we acquire or lose our role
 // as the leader in the Raft cluster. There is some work the leader is
 // expected to do, so we must react to changes
-func (s *Server) monitorLeadership() {
+func (s *Server) monitorLeadership(ctx context.Context) {
 	var weAreLeaderCh chan struct{}
 	var leaderLoop sync.WaitGroup
 	for {
 		select {
+		case <-ctx.Done():
+			s.logger.Printf("[INFO] nomad: Closing monitor leadership process")
+			return
 		case isLeader := <-s.leaderCh:
 			switch {
 			case isLeader:
